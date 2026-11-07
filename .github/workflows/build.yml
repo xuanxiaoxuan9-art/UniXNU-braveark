@@ -26,6 +26,15 @@ jobs:
               git clone -q --depth 1 "https://github.com/UniXNU/$d.git" "UniXNU/drivers/$d" && echo "cloned: $d"
             fi
           done
+          # kit 仓库同样不在 uke 的 .gitmodules 里，缺了 prelink 会直接报 emit_prelink.py 不存在。
+          for k in XnuPrelink AdrenoFirmware AdrenoPM4 AirNir ArmSmmu4K VerifiedRoot; do
+            if [ -d "UniXNU/kits/$k" ] && [ -n "$(ls -A UniXNU/kits/$k 2>/dev/null)" ]; then
+              echo "present: kits/$k"
+            else
+              rm -rf "UniXNU/kits/$k"
+              git clone -q --depth 1 "https://github.com/UniXNU/$k.git" "UniXNU/kits/$k" && echo "cloned: kits/$k"
+            fi
+          done
       - name: Patch Apple source fetcher
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,18 +60,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 把这一步自己的输出也留进日志目录，失败时 Diagnose 会一起上传。
+          mkdir -p out/peridot/logs
+          exec > >(tee -a out/peridot/logs/step.log) 2>&1
           # 上游 XNU 的 osfmk/vm/vm_user.c 里有一行引用了不存在的变量：(void) indices;
           # macOS 这条链路的补丁没删掉它，clang 直接报 use of undeclared identifier，
           # 于是 vm_user.o 失败、内核 make 中止。源码落到 tree 之后统一改掉。
           repair() {
             fixed=0
             while read -r f; do
-              if grep -q '(void) indices;' "$f"; then
-                sed -i '' '/^[[:space:]]*(void) indices;$/d' "$f"
+              echo "candidate: $f"
+              if grep -q 'indices' "$f"; then
+                sed -i '' '/void) indices;/d' "$f"
                 echo "fixed: $f"
                 fixed=1
               fi
             done < <(find out/peridot/tree -name vm_user.c -type f 2>/dev/null)
+            echo "repair fixed=$fixed"
             if [ "$fixed" = 1 ]; then
               # 只删掉 vm_user 的目标文件和记录，让 make 重新编这一个；
               # startup.o.json 不能删——它是整条编译记录集的锚点，缺了它
