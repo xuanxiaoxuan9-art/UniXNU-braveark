@@ -15,45 +15,55 @@ jobs:
           repository: Allenwdk/UniXNU
           ref: uke
           path: UniXNU
-      - name: Build kernel (attempt 1)
-        id: build1
-        continue-on-error: true
-        working-directory: UniXNU
+      - name: Add missing drivers
         run: |
-          ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
-          ./unixnu build kernel prelink -D ../UniXNU-braveark
-      - name: Repair sources
-        if: steps.build1.outcome == 'failure'
-        working-directory: UniXNU
-        run: |
-          # 上游 XNU 的 osfmk/vm/vm_user.c:4506 有一行引用了不存在的变量：(void) indices;
-          # 补丁链在 macOS 上没有把它删掉，clang 直接报 use of undeclared identifier，
-          # vm_user.o 编不出来 → 内核 make 中止 → link.filelist 缺失 → corecrypto 报
-          # "No XNU symbol names"（那只是连锁现象）。
-          # 首次编译失败后，源码一定已经落到 tree 里，这里逐个改掉，再让编译原地续编。
-          find out/peridot/tree -name vm_user.c -type f 2>/dev/null | while read -r f; do
-            if grep -q '(void) indices;' "$f"; then
-              sed -i '' '/^[[:space:]]*(void) indices;$/d' "$f"
-              echo "fixed: $f"
+          # uke 分支只登记了一部分驱动子模块，peridot 的归档链还用到下面这些（都在 UniXNU 组织下）。
+          for d in SoftwareAES ShengUfs GopFramebuffer QcomGeniSpi RamBlock VirtioMmioBlock VirtioMmioConsole QcomBaseband; do
+            if [ -d "UniXNU/drivers/$d" ] && [ -n "$(ls -A UniXNU/drivers/$d 2>/dev/null)" ]; then
+              echo "present: $d"
+            else
+              rm -rf "UniXNU/drivers/$d"
+              git clone -q --depth 1 "https://github.com/UniXNU/$d.git" "UniXNU/drivers/$d" && echo "cloned: $d"
             fi
           done
-          # 删掉 bootstrap 记录，让内核那一趟重新跑（已有 .o 会跳过，只补 vm_user.o）
-          rm -f out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json
-      - name: Build kernel (attempt 2)
-        if: steps.build1.outcome == 'failure'
+      - name: Build kernel
         working-directory: UniXNU
         run: |
-          ./unixnu build kernel prelink -D ../UniXNU-braveark
+          # 上游 XNU 的 osfmk/vm/vm_user.c 里有一行引用了不存在的变量：(void) indices;
+          # macOS 这条链路的补丁没删掉它，clang 直接报 use of undeclared identifier，
+          # 于是 vm_user.o 失败、内核 make 中止。源码落到 tree 之后统一改掉。
+          repair() {
+            fixed=0
+            while read -r f; do
+              if grep -q '(void) indices;' "$f"; then
+                sed -i '' '/^[[:space:]]*(void) indices;$/d' "$f"
+                echo "fixed: $f"
+                fixed=1
+              fi
+            done < <(find out/peridot/tree -name vm_user.c -type f 2>/dev/null)
+            if [ "$fixed" = 1 ]; then
+              rm -f out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json
+            fi
+          }
+          # 第一段：无显示归档的 bootstrap 内核，它的 kernel.macho 会被发布成 prelink 候选
+          # （board.toml 的 [kernel.prelink] reference_candidate 就靠这一步产出）。
+          ./unixnu defconfig bootstrap_defconfig -D ../UniXNU-braveark
+          ./unixnu build kernel -D ../UniXNU-braveark || true
+          repair
+          ./unixnu build kernel -D ../UniXNU-braveark
+          # 第二段：带全部设备归档的完整内核，显示归档此时才有候选可用。
+          ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
+          ./unixnu build kernel -D ../UniXNU-braveark
       - name: Diagnose
         if: failure()
         working-directory: UniXNU
         run: |
           echo '===== real errors ====='
-          grep -h "error:" out/peridot/logs/*.log 2>/dev/null | grep -v ' "' | head -40 || echo 'no error lines'
-          echo '===== tail of bootstrap log ====='
-          tail -15 out/peridot/logs/kernel-bootstrap.log 2>/dev/null || true
-          echo '===== tail of prelink log ====='
-          tail -15 out/peridot/logs/prelink.log 2>/dev/null || true
+          grep -h "error:" out/peridot/logs/*.log 2>/dev/null | head -40 || echo 'no error lines'
+          echo '===== undefined symbols ====='
+          sed -n '/Undefined symbols/,$p' out/peridot/logs/*.log 2>/dev/null | head -25 || true
+          echo '===== tail ====='
+          tail -12 out/peridot/logs/kernel.log out/peridot/logs/kernel-bootstrap.log 2>/dev/null || true
           mkdir -p dbg
           cp out/peridot/logs/*.log dbg/ 2>/dev/null || true
           du -sh dbg/* 2>/dev/null || true
