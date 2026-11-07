@@ -26,11 +26,28 @@ jobs:
               git clone -q --depth 1 "https://github.com/UniXNU/$d.git" "UniXNU/drivers/$d" && echo "cloned: $d"
             fi
           done
+      - name: Patch Apple source fetcher
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # uke 分支的 prepare-xnu-source.py 用匿名 GitHub API 拉 Apple 头文件，
+          # runner 共享 IP 会被限流成 403。这里给它加一个带 token 的 opener。
+          python3 - <<'PYEOF'
+          from pathlib import Path
+          p = Path('UniXNU/scripts/prepare-xnu-source.py')
+          s = p.read_text()
+          if 'Authorization' in s:
+              print('already patched')
+          else:
+              helper = 'import urllib.parse\nimport urllib.request\n\n_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")\n\n\ndef _open(url, timeout=30):\n    req = urllib.request.Request(url, headers={"User-Agent": "unixnu-build"})\n    host = urllib.parse.urlsplit(url).hostname\n    if _TOKEN and host in ("api.github.com", "raw.githubusercontent.com"):\n        req.add_header("Authorization", "Bearer " + _TOKEN)\n    return urllib.request.urlopen(req, timeout=timeout)'
+              s = s.replace('urllib.request.urlopen(', '_open(')
+              s = s.replace('import urllib.request', helper)
+              p.write_text(s)
+              print('patched prepare-xnu-source.py')
+          PYEOF
       - name: Build kernel
         working-directory: UniXNU
         env:
-          # prepare-xnu-source.py 要调 GitHub API 拉 Apple DriverKit 头文件，
-          # 匿名调用在 runner 上会被限流成 403，带 token 才稳。
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -50,7 +67,7 @@ jobs:
               # 只删掉 vm_user 的目标文件和记录，让 make 重新编这一个；
               # startup.o.json 不能删——它是整条编译记录集的锚点，缺了它
               # compile_commands.json 那一步会直接失败。
-              find out/peridot/tree/build -name 'vm_user.o' -o -name 'vm_user.o.json' | while read -r o; do
+              find out/peridot/tree/build \( -name 'vm_user.o' -o -name 'vm_user.o.json' \) | while read -r o; do
                 rm -f "$o"; echo "removed: $o"
               done
             fi
@@ -58,7 +75,6 @@ jobs:
           # 第一段：无显示归档的 bootstrap 内核，它的 kernel.macho 会被发布成 prelink 候选
           # （board.toml 的 [kernel.prelink] reference_candidate 就靠这一步产出）。
           ./unixnu defconfig bootstrap_defconfig -D ../UniXNU-braveark
-          # 下载 Apple 头文件偶尔撞 403 限流，重试几次即可（构建是可续做的，不会从头来）。
           for i in 1 2 3; do
             ./unixnu build kernel -D ../UniXNU-braveark && break
             echo "retry $i"
