@@ -24,15 +24,17 @@ jobs:
         if: always()
         working-directory: UniXNU
         run: |
-          echo '===== archive-01 log tail ====='
-          tail -n 25 out/peridot/logs/archive-01-build-corecrypto-14.log 2>/dev/null || true
-          echo '===== rerun with VERBOSE ====='
-          sed -i '' 's/MAKEJOBS=-j/VERBOSE=YES MAKEJOBS=-j/g' out/peridot/tree/scripts/build-xnu-4k-baseline.sh
+          echo '===== force a real kernel pass ====='
+          rm -f out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json
+          sed -i '' 's/MAKEJOBS=-j/VERBOSE=YES MAKEJOBS=-j/g' out/peridot/tree/scripts/build-xnu-4k-baseline.sh 2>/dev/null || true
+          sed -i '' 's/MAKEJOBS=-j/VERBOSE=YES MAKEJOBS=-j/g' ../UniXNU-braveark/scripts/build-xnu-4k-baseline.sh 2>/dev/null || true
           ./unixnu build kernel -D ../UniXNU-braveark > /tmp/rerun.log 2>&1 || true
-          echo '===== errors ====='
-          grep -n -E 'error|Error|undefined|No such|\*\*\*' /tmp/rerun.log | tail -n 40 || true
-          echo '===== rerun tail ====='
-          tail -n 60 /tmp/rerun.log || true
+          L=out/peridot/logs/kernel-bootstrap.log
+          echo "===== bootstrap log size: $(wc -l < $L) lines ====="
+          echo '===== errors with context ====='
+          grep -n -B3 -A8 -i -E 'error|\*\*\*|undefined|cannot find|No such' $L | tail -n 70 || true
+          echo '===== bootstrap tail ====='
+          tail -n 50 $L || true
       - name: Collect
         if: always()
         run: |
