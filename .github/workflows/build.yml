@@ -28,6 +28,11 @@ jobs:
           done
       - name: Build kernel
         working-directory: UniXNU
+        env:
+          # prepare-xnu-source.py 要调 GitHub API 拉 Apple DriverKit 头文件，
+          # 匿名调用在 runner 上会被限流成 403，带 token 才稳。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 上游 XNU 的 osfmk/vm/vm_user.c 里有一行引用了不存在的变量：(void) indices;
           # macOS 这条链路的补丁没删掉它，clang 直接报 use of undeclared identifier，
@@ -53,7 +58,11 @@ jobs:
           # 第一段：无显示归档的 bootstrap 内核，它的 kernel.macho 会被发布成 prelink 候选
           # （board.toml 的 [kernel.prelink] reference_candidate 就靠这一步产出）。
           ./unixnu defconfig bootstrap_defconfig -D ../UniXNU-braveark
-          ./unixnu build kernel -D ../UniXNU-braveark || true
+          # 下载 Apple 头文件偶尔撞 403 限流，重试几次即可（构建是可续做的，不会从头来）。
+          for i in 1 2 3; do
+            ./unixnu build kernel -D ../UniXNU-braveark && break
+            echo "retry $i"
+          done || true
           repair
           ./unixnu build kernel -D ../UniXNU-braveark
           # 第二段：带全部设备归档的完整内核，显示归档此时才有候选可用。
