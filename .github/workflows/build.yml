@@ -25,10 +25,22 @@ jobs:
           print('archives kept:', len(tomllib.loads(new)['kernel']['archives']))
           PYEOF
       - uses: actions/checkout@v4
+        continue-on-error: true
         with:
           repository: Allenwdk/UniXNU
           ref: uke
           path: UniXNU
+      - name: Ensure UniXNU checkout
+        run: |
+          # checkout 偶尔不会落地（run #15 就是 UniXNU 目录不存在，后面直接报
+          # "trying to start process '/bin/bash' ... No such file or directory"）。这里兜底直连克隆。
+          if [ ! -f UniXNU/unixnu ]; then
+            echo 'uke checkout missing; cloning directly'
+            rm -rf UniXNU
+            git clone -q --depth 1 --branch uke https://github.com/Allenwdk/UniXNU.git UniXNU
+          fi
+          echo "pwd=$(pwd)"
+          ls UniXNU | head -8
       - name: Add missing drivers and kits
         run: |
           # uke 分支只登记了一部分子模块，peridot 的归档链还用到底下这些（都在 UniXNU 组织下）。
