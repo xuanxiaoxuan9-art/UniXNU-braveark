@@ -31,10 +31,17 @@ jobs:
           ./unixnu build kernel -D ../UniXNU-braveark > /tmp/rerun.log 2>&1 || true
           L=out/peridot/logs/kernel-bootstrap.log
           echo "===== bootstrap log size: $(wc -l < $L) lines ====="
-          echo '===== errors with context ====='
-          grep -n -B3 -A8 -i -E 'error|\*\*\*|undefined|cannot find|No such' $L | tail -n 70 || true
-          echo '===== bootstrap tail ====='
-          tail -n 50 $L || true
+          mkdir -p dbg
+          cp "$L" dbg/kernel-bootstrap.log 2>/dev/null || true
+          cp /tmp/rerun.log dbg/rerun.log 2>/dev/null || true
+          cp out/peridot/logs/kernel.log dbg/kernel.log 2>/dev/null || true
+          du -sh dbg/* 2>/dev/null || true
+      - name: Upload debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-log
+          path: UniXNU/dbg/
       - name: Collect
         if: always()
         run: |
