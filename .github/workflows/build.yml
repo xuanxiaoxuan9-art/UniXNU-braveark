@@ -10,6 +10,20 @@ jobs:
         run: |
           unzip -q unixnu-peridot-repo.zip -d unpack
           mv unpack/unixnu-peridot-repo UniXNU-braveark
+      - name: Trim archives without sources
+        run: |
+          # 本板 package/ 里没有 PeridotUsbDebug.c / PeridotThermalProbe.c（只有 Muyu 同名版本），
+          # 这两个归档跑不到就整链失败；bring-up 阶段先去掉，等出画面再补。
+          python3 - <<'PYEOF'
+          import tomllib
+          from pathlib import Path
+          p = Path('../UniXNU-braveark/board.toml')
+          s = p.read_text()
+          drop = ('build-peridot-usb-debug.py', 'build-peridot-thermal.py')
+          new = ''.join(l for l in s.splitlines(True) if not any(d in l for d in drop))
+          p.write_text(new)
+          print('archives kept:', len(tomllib.loads(new)['kernel']['archives']))
+          PYEOF
       - uses: actions/checkout@v4
         with:
           repository: Allenwdk/UniXNU
@@ -131,7 +145,20 @@ jobs:
           done || true
           repair
           ./unixnu build kernel -D ../UniXNU-braveark
-          # 第二段：带全部设备归档的完整内核，显示归档此时才有候选可用。
+          # prelink 已经写好了 kernel.macho 和 kernel.json，但显示归档读的是 build/xnu-prelink 下
+          # 的“参考候选”。把这个 plan 按归档期望的名字发布出来，否则 archive 10 直接报 no candidate。
+          if [ -f out/peridot/kernel/kernel.json ]; then
+            ( cd out/peridot/tree && python3 scripts/publish-prelink-candidate.py --plan ../kernel/kernel.json --tree . ) || echo 'publish-prelink-candidate failed, continuing'
+            if [ -f out/peridot/tree/build/xnu-prelink/native-owner-mobile-graphics-candidate.macho ]; then
+              mkdir -p out/peridot/tree/build/native-prelink
+              for n in native-owner-ufs-cpu-desktop-v9-hid-init-candidate native-owner-ufs-rootauth3-candidate native-owner-renderbox-presentation-candidate; do
+                cp out/peridot/tree/build/xnu-prelink/native-owner-mobile-graphics-candidate.macho "out/peridot/tree/build/native-prelink/$n.macho"
+                cp out/peridot/tree/build/xnu-prelink/native-owner-mobile-graphics-candidate.json "out/peridot/tree/build/native-prelink/$n.json"
+              done
+            fi
+          else
+            echo 'no kernel.json plan; skip candidate publish'
+          fi
           ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
           ./unixnu build kernel -D ../UniXNU-braveark
       - name: Diagnose
