@@ -20,11 +20,24 @@ jobs:
         run: |
           ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
           ./unixnu build kernel prelink -D ../UniXNU-braveark
+      - name: Diagnose
+        if: always()
+        working-directory: UniXNU
+        run: |
+          echo '===== archive-01 log tail ====='
+          tail -n 25 out/peridot/logs/archive-01-build-corecrypto-14.log 2>/dev/null || true
+          echo '===== rerun with VERBOSE ====='
+          sed -i '' 's/MAKEJOBS=-j/VERBOSE=YES MAKEJOBS=-j/g' out/peridot/tree/scripts/build-xnu-4k-baseline.sh
+          ./unixnu build kernel -D ../UniXNU-braveark > /tmp/rerun.log 2>&1 || true
+          echo '===== errors ====='
+          grep -n -E 'error|Error|undefined|No such|\*\*\*' /tmp/rerun.log | tail -n 40 || true
+          echo '===== rerun tail ====='
+          tail -n 60 /tmp/rerun.log || true
       - name: Collect
         if: always()
         run: |
           mkdir -p artifacts
-          find out/peridot -name 'kernel.macho' -o -name '*.noctf' | xargs -r -I{} cp -v {} artifacts/
+          find out/peridot -name 'kernel.macho' -o -name '*.noctf' | xargs -r -I{} cp -v {} artifacts/ 2>/dev/null || true
           ls -l artifacts
       - name: Encrypt
         if: always()
