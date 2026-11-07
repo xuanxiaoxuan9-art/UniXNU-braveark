@@ -42,7 +42,12 @@ jobs:
               fi
             done < <(find out/peridot/tree -name vm_user.c -type f 2>/dev/null)
             if [ "$fixed" = 1 ]; then
-              rm -f out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json
+              # 只删掉 vm_user 的目标文件和记录，让 make 重新编这一个；
+              # startup.o.json 不能删——它是整条编译记录集的锚点，缺了它
+              # compile_commands.json 那一步会直接失败。
+              find out/peridot/tree/build -name 'vm_user.o' -o -name 'vm_user.o.json' | while read -r o; do
+                rm -f "$o"; echo "removed: $o"
+              done
             fi
           }
           # 第一段：无显示归档的 bootstrap 内核，它的 kernel.macho 会被发布成 prelink 候选
