@@ -1,0 +1,42 @@
+name: build-peridot-kernel
+on: workflow_dispatch
+jobs:
+  kernel:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack device repo
+        run: |
+          unzip -q unixnu-peridot-repo.zip -d unpack
+          mv unpack/unixnu-peridot-repo UniXNU-braveark
+      - uses: actions/checkout@v4
+        with:
+          repository: Allenwdk/UniXNU
+          ref: uke
+          path: UniXNU
+      - name: Build kernel
+        working-directory: UniXNU
+        run: |
+          ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
+          ./unixnu build kernel prelink -D ../UniXNU-braveark
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p artifacts
+          find out/peridot -name 'kernel.macho' -o -name '*.noctf' | xargs -r -I{} cp -v {} artifacts/
+          ls -l artifacts
+      - name: Encrypt
+        if: always()
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          test -n "$ARTIFACT_KEY" || { echo 'set ARTIFACT_KEY'; exit 1; }
+          tar -C artifacts -cf a.tar .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in a.tar -out artifacts/peridot-kernel.tar.enc
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: peridot-kernel
+          path: artifacts/
