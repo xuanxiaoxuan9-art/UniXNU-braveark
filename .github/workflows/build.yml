@@ -32,6 +32,26 @@ jobs:
           repository: Allenwdk/UniXNU
           ref: uke
           path: UniXNU
+      - name: Ensure the llvm-objcopy the display archive expects
+        # 显示归档用 `brew --prefix llvm` 拼 llvm-objcopy 路径；runner 上该前缀存在但 bin 里没有时补一个链接
+        run: |
+          p="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
+          echo "llvm prefix: $p"
+          if [ ! -x "$p/bin/llvm-objcopy" ]; then
+            mkdir -p "$p/bin" 2>/dev/null || true
+            o="$(command -v llvm-objcopy || true)"
+            if [ -z "$o" ]; then
+              o="$(ls /opt/homebrew/bin/llvm-objcopy /usr/local/bin/llvm-objcopy \
+                    /opt/homebrew/Cellar/llvm*/bin/llvm-objcopy \
+                    /opt/homebrew/opt/llvm*/bin/llvm-objcopy 2>/dev/null | head -1)"
+            fi
+            if [ -n "$o" ] && [ -e "$o" ]; then
+              ln -sf "$o" "$p/bin/llvm-objcopy" && echo "linked $o"
+            else
+              echo "no llvm-objcopy on this runner"
+            fi
+          fi
+          ls -l "$p/bin/llvm-objcopy" 2>/dev/null || true
       - name: Ensure UniXNU checkout
         run: |
           # checkout 偶尔不会落地（run #15 就是 UniXNU 目录不存在，后面直接报
