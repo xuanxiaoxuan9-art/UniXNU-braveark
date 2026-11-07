@@ -17,7 +17,9 @@ jobs:
           python3 - <<'PYEOF'
           import tomllib
           from pathlib import Path
-          p = Path('../UniXNU-braveark/board.toml')
+          p = Path('UniXNU-braveark/board.toml')
+          if not p.is_file():
+              raise SystemExit('board.toml not found at ' + str(p.resolve()))
           s = p.read_text()
           drop = ('build-peridot-usb-debug.py', 'build-peridot-thermal.py')
           new = ''.join(l for l in s.splitlines(True) if not any(d in l for d in drop))
