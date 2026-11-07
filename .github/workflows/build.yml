@@ -54,6 +54,27 @@ jobs:
               p.write_text(s)
               print('patched prepare-xnu-source.py')
           PYEOF
+          python3 - <<'PYEOF'
+          from pathlib import Path
+          p = Path('UniXNU/scripts/build-native-aes-bindings.py')
+          s = p.read_text()
+          marker = 'args = parser.parse_args()\n'
+          extra = ("args = parser.parse_args()\n"
+                   "args.objects_dir.mkdir(parents=True, exist_ok=True)\n"
+                   "_native = args.objects_dir / 'NativeAES.o'\n"
+                   "if not _native.exists():\n"
+                   "    _alt = args.objects_dir / 'SoftwareAES.o'\n"
+                   "    if _alt.exists():\n"
+                   "        _native.write_bytes(_alt.read_bytes())\n"
+                   "        print('seeded NativeAES.o from SoftwareAES.o')\n")
+          if '_native.write_bytes' in s:
+              print('already patched aes bindings')
+          elif marker in s:
+              p.write_text(s.replace(marker, extra, 1))
+              print('patched build-native-aes-bindings.py')
+          else:
+              print('aes bindings untouched')
+          PYEOF
       - name: Build kernel
         working-directory: UniXNU
         env:
