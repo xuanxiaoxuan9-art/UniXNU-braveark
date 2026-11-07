@@ -15,34 +15,47 @@ jobs:
           repository: Allenwdk/UniXNU
           ref: uke
           path: UniXNU
-      - name: Build kernel
+      - name: Build kernel (attempt 1)
+        id: build1
+        continue-on-error: true
         working-directory: UniXNU
         run: |
           ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
-          # 上游 XNU 的 osfmk/vm/vm_user.c 里有一行引用了不存在的变量：(void) indices;
-          # Linux 上 disabled-deferred-reclaim.patch 会删掉它，macOS 这条链路补丁没打上就编不过，
-          # 于是 vm_user.o 失败、link.filelist 没生成、corecrypto 连锁报 "No XNU symbol names"。
-          # 这里在编译前直接把该行删掉（补丁循环的 reverse-check 会识别为已打补丁而跳过）。
-          for f in out/feeds/*/osfmk/vm/vm_user.c out/peridot/tree/.cache/xnu-work/osfmk/vm/vm_user.c; do
-            if [ -f "$f" ] && grep -q '(void) indices;' "$f"; then
+          ./unixnu build kernel prelink -D ../UniXNU-braveark
+      - name: Repair sources
+        if: steps.build1.outcome == 'failure'
+        working-directory: UniXNU
+        run: |
+          # 上游 XNU 的 osfmk/vm/vm_user.c:4506 有一行引用了不存在的变量：(void) indices;
+          # 补丁链在 macOS 上没有把它删掉，clang 直接报 use of undeclared identifier，
+          # vm_user.o 编不出来 → 内核 make 中止 → link.filelist 缺失 → corecrypto 报
+          # "No XNU symbol names"（那只是连锁现象）。
+          # 首次编译失败后，源码一定已经落到 tree 里，这里逐个改掉，再让编译原地续编。
+          find out/peridot/tree -name vm_user.c -type f 2>/dev/null | while read -r f; do
+            if grep -q '(void) indices;' "$f"; then
               sed -i '' '/^[[:space:]]*(void) indices;$/d' "$f"
               echo "fixed: $f"
             fi
           done
+          # 删掉 bootstrap 记录，让内核那一趟重新跑（已有 .o 会跳过，只补 vm_user.o）
+          rm -f out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json
+      - name: Build kernel (attempt 2)
+        if: steps.build1.outcome == 'failure'
+        working-directory: UniXNU
+        run: |
           ./unixnu build kernel prelink -D ../UniXNU-braveark
       - name: Diagnose
         if: failure()
         working-directory: UniXNU
         run: |
-          echo '===== errors in bootstrap log ====='
-          L=out/peridot/logs/kernel-bootstrap.log
-          grep -n "error:" "$L" 2>/dev/null | head -30 || echo 'no error lines'
-          echo '===== tail ====='
-          tail -15 "$L" 2>/dev/null || true
+          echo '===== real errors ====='
+          grep -h "error:" out/peridot/logs/*.log 2>/dev/null | grep -v ' "' | head -40 || echo 'no error lines'
+          echo '===== tail of bootstrap log ====='
+          tail -15 out/peridot/logs/kernel-bootstrap.log 2>/dev/null || true
+          echo '===== tail of prelink log ====='
+          tail -15 out/peridot/logs/prelink.log 2>/dev/null || true
           mkdir -p dbg
-          for f in kernel-bootstrap.log kernel.log prelink.log archive-01-build-corecrypto-14.log; do
-            cp "out/peridot/logs/$f" "dbg/$f" 2>/dev/null || true
-          done
+          cp out/peridot/logs/*.log dbg/ 2>/dev/null || true
           du -sh dbg/* 2>/dev/null || true
       - name: Upload debug logs
         if: failure()
