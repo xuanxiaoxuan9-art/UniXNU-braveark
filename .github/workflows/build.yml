@@ -19,37 +19,47 @@ jobs:
         working-directory: UniXNU
         run: |
           ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
+          # 上游 XNU 的 osfmk/vm/vm_user.c 里有一行引用了不存在的变量：(void) indices;
+          # Linux 上 disabled-deferred-reclaim.patch 会删掉它，macOS 这条链路补丁没打上就编不过，
+          # 于是 vm_user.o 失败、link.filelist 没生成、corecrypto 连锁报 "No XNU symbol names"。
+          # 这里在编译前直接把该行删掉（补丁循环的 reverse-check 会识别为已打补丁而跳过）。
+          for f in out/feeds/*/osfmk/vm/vm_user.c out/peridot/tree/.cache/xnu-work/osfmk/vm/vm_user.c; do
+            if [ -f "$f" ] && grep -q '(void) indices;' "$f"; then
+              sed -i '' '/^[[:space:]]*(void) indices;$/d' "$f"
+              echo "fixed: $f"
+            fi
+          done
           ./unixnu build kernel prelink -D ../UniXNU-braveark
       - name: Diagnose
-        if: always()
+        if: failure()
         working-directory: UniXNU
         run: |
-          echo '===== force a real kernel pass ====='
-          rm -f out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json
-          sed -i '' 's/MAKEJOBS=-j/VERBOSE=YES MAKEJOBS=-j/g' out/peridot/tree/scripts/build-xnu-4k-baseline.sh 2>/dev/null || true
-          sed -i '' 's/MAKEJOBS=-j/VERBOSE=YES MAKEJOBS=-j/g' ../UniXNU-braveark/scripts/build-xnu-4k-baseline.sh 2>/dev/null || true
-          ./unixnu build kernel -D ../UniXNU-braveark > /tmp/rerun.log 2>&1 || true
+          echo '===== errors in bootstrap log ====='
           L=out/peridot/logs/kernel-bootstrap.log
-          echo "===== bootstrap log size: $(wc -l < $L) lines ====="
+          grep -n "error:" "$L" 2>/dev/null | head -30 || echo 'no error lines'
+          echo '===== tail ====='
+          tail -15 "$L" 2>/dev/null || true
           mkdir -p dbg
-          cp "$L" dbg/kernel-bootstrap.log 2>/dev/null || true
-          cp /tmp/rerun.log dbg/rerun.log 2>/dev/null || true
-          cp out/peridot/logs/kernel.log dbg/kernel.log 2>/dev/null || true
+          for f in kernel-bootstrap.log kernel.log prelink.log archive-01-build-corecrypto-14.log; do
+            cp "out/peridot/logs/$f" "dbg/$f" 2>/dev/null || true
+          done
           du -sh dbg/* 2>/dev/null || true
       - name: Upload debug logs
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: debug-log
           path: UniXNU/dbg/
       - name: Collect
-        if: always()
+        if: success()
+        working-directory: UniXNU
         run: |
           mkdir -p artifacts
-          find out/peridot -name 'kernel.macho' -o -name '*.noctf' | xargs -r -I{} cp -v {} artifacts/ 2>/dev/null || true
+          find out/peridot \( -name 'kernel.macho' -o -name '*.noctf' \) -type f -exec cp -v {} artifacts/ \;
           ls -l artifacts
       - name: Encrypt
-        if: always()
+        if: success()
+        working-directory: UniXNU
         env:
           ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
         run: |
@@ -57,8 +67,8 @@ jobs:
           tar -C artifacts -cf a.tar .
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in a.tar -out artifacts/peridot-kernel.tar.enc
       - name: Upload
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: peridot-kernel
-          path: artifacts/
+          path: UniXNU/artifacts/
