@@ -138,15 +138,16 @@ jobs:
           end = body.find("    if trust:", start)
           if start < 0 or end < 0:
               raise SystemExit('payload panic-screen block not found')
-          replacement = """    if spec.get('panic_screen'):
-          probe = ['python3', ctx.tree / 'scripts/patch-xnu-entry-probe.py',
-                   payloads / 'kernel.macho', '--panic-screen', '--no-reset']
-          if spec.get('entry_probe_fb_after'):
-              probe += ['--fb-probe-after', str(spec['entry_probe_fb_after']),
-                        '--fb-probe-text', str(spec.get('entry_probe_fb_text', 'XNU ENTRY'))]
-          run(probe, cwd=ctx.tree, env=dict(os.environ, UNIXNU_UEFI=str(ctx.uefi or '')),
-              log_file=ctx.logs / 'payload-patch.log')
-          """
+          replacement = chr(10).join([
+              "    if spec.get('panic_screen'):",
+              "        probe = ['python3', ctx.tree / 'scripts/patch-xnu-entry-probe.py',",
+              "                 payloads / 'kernel.macho', '--panic-screen', '--no-reset']",
+              "        if spec.get('entry_probe_fb_after'):",
+              "            probe += ['--fb-probe-after', str(spec['entry_probe_fb_after']),",
+              "                      '--fb-probe-text', str(spec.get('entry_probe_fb_text', 'XNU ENTRY'))]",
+              "        run(probe, cwd=ctx.tree, env=dict(os.environ, UNIXNU_UEFI=str(ctx.uefi or '')),",
+              "            log_file=ctx.logs / 'payload-patch.log')",
+          ]) + chr(10)
           body = body[:start] + replacement + body[end:]
           compile(body, str(p), 'exec')
           p.write_text(body)
