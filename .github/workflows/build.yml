@@ -181,6 +181,20 @@ jobs:
           if not match:
               raise SystemExit('Could not isolate [kernel] archives in board.toml')
           text = text[:match.start()] + match.group(1) + '\n'.join(minimal) + '\n' + match.group(2) + text[match.end():]
+          # The full board command line enables a NativeUFS root which is not built
+          # in this first-boot profile. Remove unsupported storage/display/touch flags.
+          lines = text.splitlines()
+          payload_at = lines.index('[payload]')
+          args_at = next(i for i in range(payload_at + 1, len(lines)) if lines[i].strip() == 'kernel_args = [')
+          args_end = next(i for i in range(args_at + 1, len(lines)) if lines[i].strip() == ']')
+          lines[args_at:args_end + 1] = [
+              'kernel_args = [',
+              '  "debug=0x14e",',
+              '  "-bravearktextconsole",',
+              '  "braveark-hold-reboot=1",',
+              ']',
+          ]
+          text = '\n'.join(lines) + '\n'
           board.write_text(text)
           cfg = Path('../UniXNU-braveark/configs/peridot-nodisplay_defconfig')
           config = cfg.read_text()
