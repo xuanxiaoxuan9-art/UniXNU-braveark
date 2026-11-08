@@ -1,0 +1,33 @@
+# Derived from the read-only runtime device-tree capture supplied for Redmi Turbo 3 (peridot).
+# Only TSENS controller and thermal-sensor references consumed by check-peridot-thermal-host.py.
+# Values are copied from /proc/device-tree binary properties; each cell is printed as eight hex digits.
+
+soc/tsens0@c228000
+  reg 0c228000000001ff0c222000000001ff
+  #qcom,sensors 0000000e
+  phandle 0000026c
+soc/tsens1@c229000
+  reg 0c229000000001ff0c223000000001ff
+  #qcom,sensors 00000010
+  phandle 0000027d
+soc/tsens2@c22a000
+  reg 0c22a000000001ff0c224000000001ff
+  #qcom,sensors 00000005
+  phandle 00000286
+
+thermal-zones/cpu-0-0-0
+  thermal-sensors <0000027d00000001>
+thermal-zones/cpu-0-1-0
+  thermal-sensors <0000027d00000002>
+thermal-zones/cpu-0-2-0
+  thermal-sensors <0000027d00000003>
+thermal-zones/cpu-1-0-0
+  thermal-sensors <0000026c00000003>
+thermal-zones/cpu-2-0-2
+  thermal-sensors <0000026c0000000d>
+thermal-zones/gpuss-0
+  thermal-sensors <0000027d00000008>
+thermal-zones/gpuss-3
+  thermal-sensors <0000027d0000000b>
+thermal-zones/ddr
+  thermal-sensors <0000027d0000000d>

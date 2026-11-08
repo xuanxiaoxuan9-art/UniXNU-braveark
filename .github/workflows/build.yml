@@ -1,5 +1,15 @@
 name: build-peridot-kernel
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - audit/peridot-honest-bringup
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: peridot-kernel-build
+  cancel-in-progress: false
 jobs:
   kernel:
     runs-on: macos-latest
@@ -10,22 +20,37 @@ jobs:
         run: |
           unzip -q unixnu-peridot-repo.zip -d unpack
           mv unpack/unixnu-peridot-repo UniXNU-braveark
-      - name: Trim archives without sources
+          ln -sfn UniXNU-braveark UniXNU-peridot
+      - name: Validate Peridot hardware inputs
         run: |
-          # 本板 package/ 里没有 PeridotUsbDebug.c / PeridotThermalProbe.c（只有 Muyu 同名版本），
-          # 这两个归档跑不到就整链失败；bring-up 阶段先去掉，等出画面再补。
-          python3 - <<'PYEOF'
-          import tomllib
-          from pathlib import Path
-          p = Path('UniXNU-braveark/board.toml')
-          if not p.is_file():
-              raise SystemExit('board.toml not found at ' + str(p.resolve()))
-          s = p.read_text()
-          drop = ('build-peridot-usb-debug.py', 'build-peridot-thermal.py')
-          new = ''.join(l for l in s.splitlines(True) if not any(d in l for d in drop))
-          p.write_text(new)
-          print('archives kept:', len(tomllib.loads(new)['kernel']['archives']))
-          PYEOF
+          set -eu
+          echo "Checking real Peridot inputs before spending time on the kernel build"
+          # All board scripts resolve fw/ from the Actions workspace root.
+          required=(
+            "fw/stock/dtb_3.dtb"
+            "fw/dtb_04.dtb"
+            "fw/android-harvest/msm-regs/a6xx.xml"
+            "fw/android-harvest/msm-regs/a6xx_gmu.xml"
+            "fw/android-harvest/msm-drv/a6xx_gmu.c"
+            "fw/android-harvest/msm-drv/a7xx_catalog.c"
+            "fw/android-harvest/vendor-source/arm-smmu-qcom.c"
+            "fw/gpu-firmware/gen71100_gmu.bin"
+            "fw/gpu-firmware/gen71100_sqe.fw"
+            "fw/gpu-firmware/gen71100_zap.mbn"
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ -s "$f" ]; then
+              printf 'FOUND  %s (%s bytes)\n' "$f" "$(wc -c < "$f" | tr -d ' ')"
+            else
+              echo "MISSING $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Peridot firmware/register harvest is incomplete. Dummy XML, copied objects, and fabricated audit checkpoints are not accepted."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         continue-on-error: true
         with:
@@ -117,31 +142,7 @@ jobs:
               p.write_text(s)
               print('patched prepare-xnu-source.py')
           PYEOF
-          # 2) build-arm-driver.py SoftwareAES 产出 SoftwareAES.o，而绑定脚本写死读 NativeAES.o。
-          python3 - <<'PYEOF'
-          from pathlib import Path
-          p = Path('UniXNU/scripts/build-native-aes-bindings.py')
-          if not p.is_file():
-              print('no build-native-aes-bindings.py to patch')
-              raise SystemExit(0)
-          s = p.read_text()
-          marker = 'args = parser.parse_args()\n'
-          extra = ("args = parser.parse_args()\n"
-                   "args.objects_dir.mkdir(parents=True, exist_ok=True)\n"
-                   "_native = args.objects_dir / 'NativeAES.o'\n"
-                   "if not _native.exists():\n"
-                   "    _alt = args.objects_dir / 'SoftwareAES.o'\n"
-                   "    if _alt.exists():\n"
-                   "        _native.write_bytes(_alt.read_bytes())\n"
-                   "        print('seeded NativeAES.o from SoftwareAES.o')\n")
-          if '_native.write_bytes' in s:
-              print('already patched aes bindings')
-          elif marker in s:
-              p.write_text(s.replace(marker, extra, 1))
-              print('patched build-native-aes-bindings.py')
-          else:
-              print('aes bindings untouched')
-          PYEOF
+          # NativeAES bindings must use the object actually produced by the NativeAES driver; no object substitution.
       - name: Build kernel
         working-directory: UniXNU
         env:
@@ -183,49 +184,10 @@ jobs:
           # 的“参考候选”。把这个 plan 按归档期望的名字发布出来，否则 archive 10 直接报 no candidate。
           if [ -f out/peridot/kernel/kernel.json ]; then
             ( cd out/peridot/tree && python3 scripts/publish-prelink-candidate.py --plan ../kernel/kernel.json --tree . ) || echo 'publish-prelink-candidate failed, continuing'
-            if [ -f out/peridot/tree/build/xnu-prelink/native-owner-mobile-graphics-candidate.macho ]; then
-              mkdir -p out/peridot/tree/build/native-prelink
-              for n in native-owner-ufs-cpu-desktop-v9-hid-init-candidate native-owner-ufs-rootauth3-candidate native-owner-renderbox-presentation-candidate; do
-                cp out/peridot/tree/build/xnu-prelink/native-owner-mobile-graphics-candidate.macho "out/peridot/tree/build/native-prelink/$n.macho"
-                cp out/peridot/tree/build/xnu-prelink/native-owner-mobile-graphics-candidate.json "out/peridot/tree/build/native-prelink/$n.json"
-              done
-            fi
           else
             echo 'no kernel.json plan; skip candidate publish'
           fi
-          # 板子仓库里几个 peridot 源文件沿用了 muyu 的名字（内容写的都是 peridot），归档脚本却按
-          # *Peridot* 找；按内容复制一份，不动仓库。
-          python3 - <<'PYEOF'
-          import shutil
-          from pathlib import Path
-          tree = Path('out/peridot/tree/kits/peridot')
-          n = 0
-          if tree.is_dir():
-              for src in sorted(tree.glob('*Muyu*')):
-                  dst = src.with_name(src.name.replace('Muyu', 'Peridot'))
-                  if not dst.exists():
-                      shutil.copyfile(src, dst)
-                      print('seeded', dst.name, 'from', src.name)
-                      n += 1
-          print('seeded peridot sources:', n)
-          PYEOF
-          # 显示归档开头还有一道来源闸门：要求 build/display-analysis/mobile-graphics-legacy-abi.json
-          # 里带着早先 QEMU 观测的 checkpoint 哈希（该产物在 CI 里被裁剪）。按脚本里的常量补一份，
-          # 后面的 vtable/构造函数/抽象槽断言照常对真候选跑。
-          python3 - <<'PYEOF'
-          import json, re
-          from pathlib import Path
-          tree = Path('out/peridot/tree')
-          audit = tree / 'scripts/audit-mobile-graphics-legacy.py'
-          if audit.is_file():
-              text = audit.read_text()
-              m = re.search(r"RUNTIME_SHA\s*=\s*'([0-9a-f]{64})'", text)
-              out = tree / 'build/display-analysis/mobile-graphics-legacy-abi.json'
-              if m and not out.is_file():
-                  out.parent.mkdir(parents=True, exist_ok=True)
-                  out.write_text(json.dumps({'runtime_metadata_checkpoint_sha256': m.group(1)}))
-                  print('seeded display checkpoint', m.group(1)[:16])
-          PYEOF
+          # No Muyu-to-Peridot filename aliases and no synthetic runtime checkpoint.
           ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
           ./unixnu build kernel -D ../UniXNU-braveark
       - name: Diagnose
