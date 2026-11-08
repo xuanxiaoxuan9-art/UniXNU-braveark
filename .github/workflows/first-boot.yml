@@ -8,7 +8,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-native-entry-stage1-v5
+  group: peridot-native-entry-stage1-v6
   cancel-in-progress: false
 
 jobs:
@@ -508,7 +508,7 @@ jobs:
         working-directory: UniXNU
         run: |
           set -eu
-          PUB="../UniXNU-braveark/.github/keys/peridot-stage1-public.pem"
+          PUB="../.github/keys/peridot-stage1-public.pem"
           test -s "$PUB"
           stage="$RUNNER_TEMP/peridot-native-entry-plain"
           keyfile="$RUNNER_TEMP/peridot-native-entry-key.hex"
