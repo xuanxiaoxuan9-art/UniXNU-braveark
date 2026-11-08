@@ -56,7 +56,9 @@ jobs:
       - name: Install build tools
         run: |
           brew install cmake ninja unifdef llvm mtools dtc
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          export PATH="$LLVM_BIN:$PATH"
           command -v clang
           command -v llvm-objcopy
           command -v llvm-nm
