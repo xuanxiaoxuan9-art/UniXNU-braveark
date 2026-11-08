@@ -163,7 +163,90 @@ jobs:
           else
             echo 'no kernel.json plan; skip candidate publish'
           fi
-          # First hardware milestone: minimal XNU only. Do not build display/GPU/touch/UFS archives.
+          # Minimal hardware milestone still needs the real DT platform, ArmCpu and CoreCrypto
+          # archives. Trim this temporary CI board profile so it does NOT build UFS/GPU/display/touch.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          board = Path('../UniXNU-braveark/board.toml')
+          text = board.read_text()
+          minimal = [
+              '  "build-corecrypto-14.py",',
+              '  "build-corecrypto-14.py --namespace",',
+              '  "build-arm-driver.py ArmDTPlatform",',
+              '  "build-arm-driver.py ArmCpu",',
+          ]
+          pattern = re.compile(r'(?ms)(^archives = \\[\\n).*?(^\\])')
+          match = pattern.search(text)
+          if not match:
+              raise SystemExit('Could not isolate [kernel] archives in board.toml')
+          text = text[:match.start()] + match.group(1) + '\\n'.join(minimal) + '\\n' + match.group(2) + text[match.end():]
+          board.write_text(text)
+          cfg = Path('../UniXNU-braveark/configs/peridot-nodisplay_defconfig')
+          config = cfg.read_text()
+          if 'CONFIG_XNU_BUILD_ARCHIVES=' not in config:
+              config += '\\nCONFIG_XNU_BUILD_ARCHIVES=y\\n'
+          else:
+              config = re.sub(r'(?m)^CONFIG_XNU_BUILD_ARCHIVES=.*
+          # The UEFI image supplied for this target currently has a 5-byte ramdisk.
+          # Build the FAT PERIDOTESP payload that carries the prelinked XNU kernel + ADT.
+          brew install mtools dtc
+          ./unixnu build payload -D ../UniXNU-braveark --unique-chip-id 0x123456789ABCDEF0
+      - name: Diagnose
+        if: failure()
+        run: |
+          if [ -d UniXNU ]; then
+            cd UniXNU
+            echo '===== real errors ====='
+            grep -h "error:" out/peridot/logs/*.log 2>/dev/null | head -40 || echo 'no error lines'
+            echo '===== undefined symbols ====='
+            sed -n '/Undefined symbols/,$p' out/peridot/logs/*.log 2>/dev/null | head -25 || true
+            echo '===== step log tail ====='
+            tail -25 out/peridot/logs/step.log 2>/dev/null || true
+            mkdir -p dbg
+            cp out/peridot/logs/*.log dbg/ 2>/dev/null || true
+            du -sh dbg/* 2>/dev/null || true
+          else
+            echo 'UniXNU checkout was not created; see earlier setup-step log.'
+          fi
+      - name: Upload debug logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-log
+          path: UniXNU/dbg/
+      - name: Collect
+        if: success()
+        working-directory: UniXNU
+        run: |
+          set -eu
+          mkdir -p artifacts
+          test -s out/peridot/kernel/kernel.macho
+          test -s out/peridot/payload/payload.img
+          cp -v out/peridot/kernel/kernel.macho artifacts/
+          cp -v out/peridot/payload/payload.img artifacts/
+          cp -v out/peridot/payload/payload.json artifacts/
+          cp -v out/peridot/kernel/kernel.json artifacts/ 2>/dev/null || true
+          ls -lh artifacts
+      - name: Encrypt
+        if: success()
+        working-directory: UniXNU
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          test -n "$ARTIFACT_KEY" || { echo 'set ARTIFACT_KEY'; exit 1; }
+          tar -C artifacts -cf a.tar .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in a.tar -out artifacts/peridot-kernel.tar.enc
+      - name: Upload
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: peridot-minimal-xnu-payload
+          path: UniXNU/artifacts/
+, 'CONFIG_XNU_BUILD_ARCHIVES=y', config)
+          cfg.write_text(config)
+          print('minimal archives:', len(minimal), '(CoreCrypto x2, ArmDTPlatform, ArmCpu)')
+          PY
           ./unixnu defconfig peridot-nodisplay_defconfig -D ../UniXNU-braveark
           ./unixnu build kernel -D ../UniXNU-braveark
           # The UEFI image supplied for this target currently has a 5-byte ramdisk.
