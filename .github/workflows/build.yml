@@ -193,6 +193,22 @@ jobs:
           else
             echo 'no kernel.json plan; skip candidate publish'
           fi
+          # 板子仓库里几个 peridot 源文件沿用了 muyu 的名字（内容写的都是 peridot），归档脚本却按
+          # *Peridot* 找；按内容复制一份，不动仓库。
+          python3 - <<'PYEOF'
+          import shutil
+          from pathlib import Path
+          tree = Path('out/peridot/tree/kits/peridot')
+          n = 0
+          if tree.is_dir():
+              for src in sorted(tree.glob('*Muyu*')):
+                  dst = src.with_name(src.name.replace('Muyu', 'Peridot'))
+                  if not dst.exists():
+                      shutil.copyfile(src, dst)
+                      print('seeded', dst.name, 'from', src.name)
+                      n += 1
+          print('seeded peridot sources:', n)
+          PYEOF
           # 显示归档开头还有一道来源闸门：要求 build/display-analysis/mobile-graphics-legacy-abi.json
           # 里带着早先 QEMU 观测的 checkpoint 哈希（该产物在 CI 里被裁剪）。按脚本里的常量补一份，
           # 后面的 vtable/构造函数/抽象槽断言照常对真候选跑。
