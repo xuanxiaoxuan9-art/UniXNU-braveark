@@ -40,7 +40,7 @@ jobs:
           missing=0
           for f in "${required[@]}"; do
             if [ -s "$f" ]; then
-              printf 'FOUND  %s (%s bytes)\n' "$f" "$(wc -c < "UniXNU-braveark/$f" | tr -d ' ')"
+              printf 'FOUND  %s (%s bytes)\n' "$f" "$(wc -c < "$f" | tr -d ' ')"
             else
               echo "MISSING $f"
               missing=1
