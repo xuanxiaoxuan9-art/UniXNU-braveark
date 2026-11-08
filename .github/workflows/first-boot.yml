@@ -8,7 +8,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-native-entry-stage1-v3
+  group: peridot-native-entry-stage1-v4
   cancel-in-progress: false
 
 jobs:
@@ -394,10 +394,69 @@ jobs:
           print('payload hashes verified; raw source kernel remains unchanged')
           PY
 
-          dtc -I dtb -O dts -o "$RUNNER_TEMP/peridot.dts" "$RUNNER_TEMP/peridot.adt"
-          grep -q 'arm,gic-v3' "$RUNNER_TEMP/peridot.dts"
-          grep -q 'nvram-proxy-data' "$RUNNER_TEMP/peridot.dts"
-          ! grep -Eq 'ufshc|/filesystems' "$RUNNER_TEMP/peridot.dts"
+          # Apple DeviceTree is a little-endian recursive property tree, not a standard FDT.
+          # Parse its native format instead of feeding it to dtc.
+          python3 - "$RUNNER_TEMP/peridot.adt" <<'PY'
+          import struct, sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+
+          def parse_node(offset, depth=0):
+              if depth > 16 or offset + 8 > len(data):
+                  raise ValueError('invalid ADT node header')
+              prop_count, child_count = struct.unpack_from('<II', data, offset)
+              offset += 8
+              props = {}
+              for _ in range(prop_count):
+                  if offset + 36 > len(data):
+                      raise ValueError('truncated ADT property header')
+                  raw_key, size = struct.unpack_from('<32sI', data, offset)
+                  offset += 36
+                  key = raw_key.split(b'\\0', 1)[0].decode('ascii')
+                  padded = (size + 3) & ~3
+                  if offset + padded > len(data):
+                      raise ValueError('truncated ADT property data')
+                  props[key] = data[offset:offset + size]
+                  offset += padded
+              children = []
+              for _ in range(child_count):
+                  child, offset = parse_node(offset, depth + 1)
+                  children.append(child)
+              return {'props': props, 'children': children}, offset
+
+          root, end = parse_node(0)
+          assert end == len(data), f'ADT trailing bytes: {len(data)-end}'
+          rp = root['props']
+          assert rp['name'] == b'device-tree\\0'
+          assert b'brave,peridot\\0' in rp['compatible']
+          assert b'qcom,cliffsp\\0' in rp['compatible']
+
+          def all_nodes(node):
+              yield node
+              for child in node['children']:
+                  yield from all_nodes(child)
+
+          nodes = list(all_nodes(root))
+          named = {n['props'].get('name', b'').rstrip(b'\\0').decode('ascii', 'replace'): n for n in nodes}
+          chosen = named['chosen']['props']
+          assert int.from_bytes(chosen['dram-size'], 'little') == 0x300000000
+          assert int.from_bytes(chosen['darwinboot-memory-size'], 'little') == 0x130000000
+          assert int.from_bytes(chosen['unique-chip-id'], 'little') == 0x123456789ABCDEF0
+          assert len(chosen['nvram-proxy-data']) == 8192
+          armio = named['arm-io']
+          gic = next(n for n in armio['children']
+                     if n['props'].get('name') == b'intc\\0')
+          assert gic['props']['compatible'] == b'arm,gic-v3\\0'
+          assert len(gic['props']['reg']) == 32
+          cpus = named['cpus']['children']
+          assert len(cpus) == 8
+          regs = [int.from_bytes(n['props']['reg'], 'little') for n in cpus]
+          assert regs == [0,0x100,0x200,0x300,0x400,0x500,0x600,0x700]
+          assert not any(n['props'].get('name') == b'ufshc\\0' for n in nodes)
+          assert 'filesystems' not in named
+          print('Apple ADT verified: Peridot compatible, GICv3, 8 CPUs, 12 GiB DRAM, NVRAM; no UFS/fstab')
+          PY
       - name: Diagnose build failure
         if: failure()
         run: |
