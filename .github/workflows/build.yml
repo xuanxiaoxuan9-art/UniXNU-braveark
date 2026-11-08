@@ -1,5 +1,9 @@
 name: build-peridot-kernel
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - audit/peridot-honest-bringup
 permissions:
   contents: read
   actions: read
@@ -20,16 +24,22 @@ jobs:
         run: |
           set -eu
           echo "Checking real Peridot inputs before spending time on the kernel build"
+          # All board scripts resolve fw/ from the Actions workspace root.
           required=(
             "fw/stock/dtb_3.dtb"
+            "fw/dtb_04.dtb"
             "fw/android-harvest/msm-regs/a6xx.xml"
             "fw/android-harvest/msm-regs/a6xx_gmu.xml"
             "fw/android-harvest/msm-drv/a6xx_gmu.c"
+            "fw/android-harvest/msm-drv/a7xx_catalog.c"
+            "fw/android-harvest/vendor-source/arm-smmu-qcom.c"
             "fw/gpu-firmware/gen71100_gmu.bin"
+            "fw/gpu-firmware/gen71100_sqe.fw"
+            "fw/gpu-firmware/gen71100_zap.mbn"
           )
           missing=0
           for f in "${required[@]}"; do
-            if [ -s "UniXNU-braveark/$f" ]; then
+            if [ -s "$f" ]; then
               printf 'FOUND  %s (%s bytes)\n' "$f" "$(wc -c < "UniXNU-braveark/$f" | tr -d ' ')"
             else
               echo "MISSING $f"
