@@ -8,7 +8,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-native-entry-stage1-v4
+  group: peridot-native-entry-stage1-v5
   cancel-in-progress: false
 
 jobs:
@@ -285,8 +285,10 @@ jobs:
               'build-arm-driver.py ArmDTPlatform',
               'build-arm-driver.py ArmCpu',
           ]
-          assert parsed['payload']['dram_size'] == 0x300000000
-          assert parsed['payload']['adt']['owned_memory_size'] < parsed['payload']['dram_size']
+          actual_dram = int(parsed['payload']['dram_size'], 0)
+          owned_window = int(parsed['payload']['adt']['owned_memory_size'], 0)
+          assert actual_dram == 0x300000000
+          assert owned_window < actual_dram
           assert parsed['payload']['panic_screen'] is True
           assert parsed['payload']['entry_probe_fb_after'] == '_PE_create_console'
           assert 'native-ufs-root=1' not in parsed['payload']['kernel_args']
