@@ -48,8 +48,9 @@ jobs:
             git clone -q --depth 1 https://github.com/UniXNU/XnuPrelink.git UniXNU/kits/XnuPrelink
           fi
           test -f UniXNU/unixnu
-          test -f UniXNU/drivers/ArmCpu/Makefile
-          test -f UniXNU/drivers/ArmDTPlatform/Makefile
+          test -s UniXNU/drivers/ArmCpu/ArmCpu.cpp
+          test -s UniXNU/drivers/ArmDTPlatform/ArmDTPlatform.cpp
+          test -s UniXNU/kits/XnuPrelink/emit_prelink.py
           test -f UniXNU/kits/XnuPrelink/emit_prelink.py
 
       - name: Install build tools
