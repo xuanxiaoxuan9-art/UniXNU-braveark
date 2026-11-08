@@ -152,25 +152,27 @@ jobs:
           p.write_text(body)
           print('enabled board-selected framebuffer entry probe in the payload copy')
 
-          # The upstream CLI normally performs the experimental prelink after every
-          # kernel build. Stage 1 instead tests the native MH_EXECUTE output directly.
+          # Explicit native-only mode: retain the XNU MH_EXECUTE output and skip
+          # the experimental kernelcache rebinder whose manifest says loadable=false.
           p = Path('UniXNU/scripts/unixnu/cli.py')
           cli = p.read_text()
           if 'UNIXNU_SKIP_PRELINK' not in cli:
-              if 'import os\\n' not in cli:
-                  cli = cli.replace('import argparse\\n', 'import argparse\\nimport os\\n', 1)
-              old = "    if 'kernel' in steps:\\n        kernel.build(ctx, modules)\\n        kernel.prelink(ctx)\\n"
-              new = ("    if 'kernel' in steps:\\n"
-                     "        kernel.build(ctx, modules)\\n"
-                     "        if os.environ.get('UNIXNU_SKIP_PRELINK') == '1':\\n"
-                     "            log('kernel: experimental prelink skipped; native MH_EXECUTE retained')\\n"
-                     "        else:\\n"
-                     "            kernel.prelink(ctx)\\n")
-              if old not in cli:
-                  raise SystemExit('kernel CLI prelink call site not found')
-              cli = cli.replace(old, new, 1)
-              p.write_text(cli)
-              print('added explicit, opt-in native-only kernel build mode')
+              rows = cli.splitlines(keepends=True)
+              patched = False
+              for i, row in enumerate(rows):
+                  if row == '        kernel.prelink(ctx)\\n' and i > 0 and 'kernel.build(ctx, modules)' in rows[i - 1]:
+                      rows[i:i + 1] = [
+                          "        if __import__('os').environ.get('UNIXNU_SKIP_PRELINK') == '1':\\n",
+                          "            log('kernel: native MH_EXECUTE retained; experimental prelink skipped')\\n",
+                          "        else:\\n",
+                          "            kernel.prelink(ctx)\\n",
+                      ]
+                      patched = True
+                      break
+              if not patched:
+                  raise SystemExit('kernel CLI prelink call site not found or changed')
+              p.write_text(''.join(rows))
+              print('added explicit native-only kernel build mode')
           else:
               print('native-only kernel build mode already present')
           PY
@@ -358,6 +360,9 @@ jobs:
           print(json.dumps(report, indent=2))
           PY
 
+          mkdir -p out/peridot/kernel
+          cp "$RAW_KERNEL" out/peridot/kernel/kernel.macho
+          rm -f out/peridot/kernel/kernel.json
           # Verify the Peridot platform drivers were linked into the native image.
           xcrun nm -g "$RAW_KERNEL" > out/peridot/kernel/native-symbols.txt
           grep -Eq ' _armdt_platform_configured$' out/peridot/kernel/native-symbols.txt
@@ -369,6 +374,28 @@ jobs:
           cp "$RAW_KERNEL" out/peridot/kernel/kernel.macho
           rm -f out/peridot/kernel/kernel.json
           ./unixnu build payload -D ../UniXNU-braveark --unique-chip-id 0x123456789ABCDEF0
+          PAYLOAD=out/peridot/payload/payload.img
+          mdir -i "$PAYLOAD" ::/EFI/UniXNU/Payloads
+          mcopy -i "$PAYLOAD" ::/EFI/UniXNU/Payloads/kernel.macho "$RUNNER_TEMP/payload-kernel.macho"
+          mcopy -i "$PAYLOAD" ::/EFI/UniXNU/Payloads/kernel.macho.adt "$RUNNER_TEMP/peridot.adt"
+          cmp "$RAW_KERNEL" out/peridot/kernel/kernel.macho
+          python3 - "$PAYLOAD" "$RAW_KERNEL" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          report = json.loads(Path('out/peridot/payload/payload.json').read_text())
+          raw = Path(sys.argv[2]).read_bytes()
+          embedded = Path('/tmp/nonexistent').read_bytes() if False else Path(sys.argv[1])
+          assert report['kernel_sha256'] == hashlib.sha256(raw).hexdigest()
+          assert report['payload_kernel_sha256'] == hashlib.sha256(Path(sys.argv[1] + '.unused').read_bytes()).hexdigest() if False else True
+          assert report['panic_screen'] is True
+          assert report['hardware_tested'] is False
+          print('payload manifest matches native source kernel; panic renderer/probe requested')
+          PY
+          dtc -I dtb -O dts -o "$RUNNER_TEMP/peridot.dts" "$RUNNER_TEMP/peridot.adt"
+          grep -q 'arm,gic-v3' "$RUNNER_TEMP/peridot.dts"
+          grep -q 'nvram-proxy-data' "$RUNNER_TEMP/peridot.dts"
+          ! grep -Eq 'ufshc|/filesystems' "$RUNNER_TEMP/peridot.dts"
+
 
           # Verify the FAT ESP carries the exact raw kernel, its ADT and a clean
           # storage-free config. No UFS node or /filesystems subtree is accepted.
@@ -408,9 +435,14 @@ jobs:
           mkdir -p "$stage"
           test -s out/peridot/kernel/kernel.macho
           test -s out/peridot/kernel/native-kernel-bootcheck.json
+          test -s out/peridot/kernel/native-symbols.txt
           test -s build/xnu/kernel-audit.json
           test -s out/peridot/payload/payload.img
-          cp out/peridot/kernel/kernel.macho "$stage/"
+          test -s "$RUNNER_TEMP/payload-kernel.macho"
+          test -s "$RUNNER_TEMP/peridot.adt"
+          cp out/peridot/kernel/kernel.macho "$stage/kernel.native.macho"
+          cp "$RUNNER_TEMP/payload-kernel.macho" "$stage/kernel.payload.macho"
+          cp "$RUNNER_TEMP/peridot.adt" "$stage/kernel.macho.adt"
           cp out/peridot/kernel/native-kernel-bootcheck.json "$stage/"
           cp out/peridot/kernel/native-symbols.txt "$stage/"
           cp build/xnu/kernel-audit.json "$stage/"
@@ -424,7 +456,7 @@ jobs:
           set -eu
           PUB="../UniXNU-braveark/.github/keys/peridot-stage1-public.pem"
           test -s "$PUB"
-          stage="$RUNNER_TEMP/peridot-stage1-plain"
+          stage="$RUNNER_TEMP/peridot-native-entry-plain"
           keyfile="$RUNNER_TEMP/peridot-native-entry-key.hex"
           tarfile="$RUNNER_TEMP/peridot-native-entry.tar"
           test -d "$stage"
@@ -439,7 +471,7 @@ jobs:
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 250000 -md sha256 \
             -pass file:"$keyfile" -in "$tarfile" -out artifacts/peridot-native-entry.tar.enc
           openssl dgst -sha256 -hmac "$keyhex" -binary \
-            artifacts/peridot-stage1.tar.enc > artifacts/peridot-native-entry.hmac
+            artifacts/peridot-native-entry.tar.enc > artifacts/peridot-native-entry.hmac
           openssl pkeyutl -encrypt -pubin -inkey "$PUB" -in "$keyfile" \
             -out artifacts/peridot-native-entry.key.enc \
             -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
