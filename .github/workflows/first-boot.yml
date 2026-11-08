@@ -129,6 +129,50 @@ jobs:
           compile(adt, str(p), 'exec')
           p.write_text(adt)
           print('removed optional UFS DT node for storage-free first boot')
+
+          # Forward the existing board's optional framebuffer probe fields.
+          # This is a diagnostic copy patch only; the raw kernel stays untouched.
+          p = Path('UniXNU/scripts/unixnu/payload.py')
+          body = p.read_text()
+          start = body.find("    if spec.get('panic_screen'):")
+          end = body.find("    if trust:", start)
+          if start < 0 or end < 0:
+              raise SystemExit('payload panic-screen block not found')
+          replacement = """    if spec.get('panic_screen'):
+          probe = ['python3', ctx.tree / 'scripts/patch-xnu-entry-probe.py',
+                   payloads / 'kernel.macho', '--panic-screen', '--no-reset']
+          if spec.get('entry_probe_fb_after'):
+              probe += ['--fb-probe-after', str(spec['entry_probe_fb_after']),
+                        '--fb-probe-text', str(spec.get('entry_probe_fb_text', 'XNU ENTRY'))]
+          run(probe, cwd=ctx.tree, env=dict(os.environ, UNIXNU_UEFI=str(ctx.uefi or '')),
+              log_file=ctx.logs / 'payload-patch.log')
+          """
+          body = body[:start] + replacement + body[end:]
+          compile(body, str(p), 'exec')
+          p.write_text(body)
+          print('enabled board-selected framebuffer entry probe in the payload copy')
+
+          # The upstream CLI normally performs the experimental prelink after every
+          # kernel build. Stage 1 instead tests the native MH_EXECUTE output directly.
+          p = Path('UniXNU/scripts/unixnu/cli.py')
+          cli = p.read_text()
+          if 'UNIXNU_SKIP_PRELINK' not in cli:
+              if 'import os\\n' not in cli:
+                  cli = cli.replace('import argparse\\n', 'import argparse\\nimport os\\n', 1)
+              old = "    if 'kernel' in steps:\\n        kernel.build(ctx, modules)\\n        kernel.prelink(ctx)\\n"
+              new = ("    if 'kernel' in steps:\\n"
+                     "        kernel.build(ctx, modules)\\n"
+                     "        if os.environ.get('UNIXNU_SKIP_PRELINK') == '1':\\n"
+                     "            log('kernel: experimental prelink skipped; native MH_EXECUTE retained')\\n"
+                     "        else:\\n"
+                     "            kernel.prelink(ctx)\\n")
+              if old not in cli:
+                  raise SystemExit('kernel CLI prelink call site not found')
+              cli = cli.replace(old, new, 1)
+              p.write_text(cli)
+              print('added explicit, opt-in native-only kernel build mode')
+          else:
+              print('native-only kernel build mode already present')
           PY
 
       - name: Build minimal XNU and RAM payload
@@ -141,18 +185,18 @@ jobs:
           mkdir -p out/peridot/logs
           exec > >(tee -a out/peridot/logs/step.log) 2>&1
 
-          # Pass 1: generic bootstrap only. This creates XNU compile records and the
-          # donor-kernel prelink candidate; it is not yet the device-qualified kernel.
+          # Pass 1: create XNU compile records using the bootstrap profile.
+          # Prelink is explicitly skipped; the native kernel is the stage-one candidate.
           ./unixnu defconfig bootstrap_defconfig -D ../UniXNU-braveark
           for attempt in 1 2 3; do
-            if ./unixnu build kernel -D ../UniXNU-braveark; then
+            if UNIXNU_SKIP_PRELINK=1 ./unixnu build kernel -D ../UniXNU-braveark; then
               break
             fi
             echo "bootstrap compile retry $attempt"
           done
 
-          # The current upstream XNU source has one stale cast line on this build path.
-          # Remove only that line and its object records, then rebuild the bootstrap pass.
+          # Remove only the known stale cast from the copied Apple XNU source and
+          # rebuild the affected bootstrap object. No original phone partition is involved.
           python3 - <<'PY'
           from pathlib import Path
           root = Path('out/peridot/tree')
@@ -173,12 +217,13 @@ jobs:
               for record in build.rglob('vm_user.o.json'):
                   record.unlink(missing_ok=True)
           PY
-          ./unixnu build kernel -D ../UniXNU-braveark
+          UNIXNU_SKIP_PRELINK=1 ./unixnu build kernel -D ../UniXNU-braveark
 
-          # Pass 2: use only the libraries required to reach the XNU entry point.
-          # UFS, GPU, touch, mobile display and legacy display stay disabled.
+          # Build only CoreCrypto, the real DT platform and the real CPU provider.
+          # This intentionally leaves UFS, GPU, touch and mobile display disabled.
           python3 - <<'PY'
           from pathlib import Path
+          import re
           import tomllib
 
           board = Path('../UniXNU-braveark/board.toml')
@@ -186,7 +231,7 @@ jobs:
           kernel_at = lines.index('[kernel]')
           archive_at = next(i for i in range(kernel_at + 1, len(lines)) if lines[i].strip() == 'archives = [')
           archive_end = next(i for i in range(archive_at + 1, len(lines)) if lines[i].strip() == ']')
-          minimal_archives = [
+          lines[archive_at:archive_end + 1] = [
               'archives = [',
               '  "build-corecrypto-14.py",',
               '  "build-corecrypto-14.py --namespace",',
@@ -194,7 +239,6 @@ jobs:
               '  "build-arm-driver.py ArmCpu",',
               ']',
           ]
-          lines[archive_at:archive_end + 1] = minimal_archives
 
           payload_at = lines.index('[payload]')
           args_at = next(i for i in range(payload_at + 1, len(lines)) if lines[i].strip() == 'kernel_args = [')
@@ -206,12 +250,27 @@ jobs:
               '  "braveark-hold-reboot=1",',
               ']',
           ]
-          board.write_text('\n'.join(lines) + '\n')
+          if not any(line.strip().startswith('entry_probe_fb_after =') for line in lines[payload_at + 1:]):
+              args_at = next(i for i in range(payload_at + 1, len(lines)) if lines[i].strip() == 'kernel_args = [')
+              lines[args_at:args_at] = [
+                  'entry_probe_fb_after = "_PE_create_console"',
+                  'entry_probe_fb_text = "XNU ENTRY: PERIDOT"',
+              ]
+          # Keep the panic renderer enabled; the probe uses it to draw one verified
+          # line after PE_create_console, then parks safely instead of mounting disks.
+          for i in range(payload_at + 1, len(lines)):
+              if lines[i].strip().startswith('panic_screen ='):
+                  lines[i] = 'panic_screen = true'
+                  break
 
+          text = '\\n'.join(lines) + '\\n'
+          board.write_text(text)
           cfg = Path('../UniXNU-braveark/configs/peridot-nodisplay_defconfig')
           config = cfg.read_text()
           if 'CONFIG_XNU_BUILD_ARCHIVES=' not in config:
-              config += '\nCONFIG_XNU_BUILD_ARCHIVES=y\n'
+              config += '\\nCONFIG_XNU_BUILD_ARCHIVES=y\\n'
+          else:
+              config = re.sub(r'(?m)^CONFIG_XNU_BUILD_ARCHIVES=.*$', 'CONFIG_XNU_BUILD_ARCHIVES=y', config)
           cfg.write_text(config)
 
           parsed = tomllib.loads(board.read_text())
@@ -221,13 +280,107 @@ jobs:
               'build-arm-driver.py ArmDTPlatform',
               'build-arm-driver.py ArmCpu',
           ]
+          assert parsed['payload']['panic_screen'] is True
+          assert parsed['payload']['entry_probe_fb_after'] == '_PE_create_console'
           assert 'native-ufs-root=1' not in parsed['payload']['kernel_args']
-          print('minimal archive profile validated')
+          print('minimal native-entry profile validated')
           PY
           ./unixnu defconfig peridot-nodisplay_defconfig -D ../UniXNU-braveark
-          ./unixnu build kernel -D ../UniXNU-braveark
+          UNIXNU_SKIP_PRELINK=1 ./unixnu build kernel -D ../UniXNU-braveark
+
+          # Native kernel path: this is the actual ARM64 MH_EXECUTE built by XNU.
+          RAW_KERNEL="out/peridot/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+          test -s "$RAW_KERNEL"
+          python3 scripts/audit-xnu-kernel.py "$RAW_KERNEL"
+
+          # Mirror DarwinBoot.c ParseKernelHeader() before creating a boot image:
+          # exact ARM64 MH_EXECUTE, LC_UNIXTHREAD flavor/count, backed executable
+          # entry, non-overlapping segments, 4 KiB base alignment and 256 MiB window.
+          python3 - "$RAW_KERNEL" <<'PY'
+          import hashlib, json, struct, sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          data = p.read_bytes()
+          u32 = lambda off: struct.unpack_from('<I', data, off)[0]
+          magic, cpu, subtype, filetype, ncmds, sizeofcmds = struct.unpack_from('<6I', data)
+          assert (magic, cpu) == (0xfeedfacf, 0x100000c), (hex(magic), hex(cpu))
+          assert (subtype & 0x00ffffff) in (0, 2), hex(subtype)
+          assert filetype == 2, f'DarwinBoot MH_EXECUTE expected, got {filetype}'
+          end = 32 + sizeofcmds
+          assert end <= len(data)
+          off = 32
+          segments = []
+          entry = None
+          for _ in range(ncmds):
+              assert off + 8 <= end
+              cmd, length = struct.unpack_from('<II', data, off)
+              assert length >= 8 and (length & 7) == 0 and off + length <= end
+              if cmd == 0x19:
+                  assert length >= 72
+                  nsects = u32(off + 64)
+                  assert nsects <= (length - 72) // 80
+                  vmaddr, vmsize, fileoff, filesize = struct.unpack_from('<QQQQ', data, off + 24)
+                  initprot = u32(off + 60)
+                  if vmsize:
+                      assert vmsize <= 0x10000000
+                      assert vmaddr <= (1 << 64) - 1 - vmsize
+                      assert filesize <= vmsize and fileoff <= len(data) and filesize <= len(data) - fileoff
+                      segments.append((vmaddr, vmsize, fileoff, filesize, initprot))
+              elif cmd == 5:
+                  assert entry is None and length == 288
+                  assert u32(off + 8) == 6 and u32(off + 12) == 68
+                  entry = struct.unpack_from('<Q', data, off + 272)[0]
+              off += length
+          assert off == end and entry is not None and 0 < len(segments) <= 64
+          base = min(s[0] for s in segments)
+          limit = max(s[0] + s[1] for s in segments)
+          assert (base & 0xfff) == 0 and (entry & 3) == 0
+          assert limit - base <= 0x10000000 - 0x200000
+          executable_entry = any(
+              vm <= entry < vm + filesz and (prot & 4)
+              for vm, size, fo, filesz, prot in segments
+          )
+          assert executable_entry, f'entry {entry:#x} is not in backed executable segment'
+          for i, first in enumerate(segments):
+              for other in segments[i + 1:]:
+                  assert first[0] + first[1] <= other[0] or other[0] + other[1] <= first[0], 'overlapping Mach-O segments'
+          report = {
+              'kernel_sha256': hashlib.sha256(data).hexdigest(),
+              'cpu_type': hex(cpu), 'cpu_subtype': hex(subtype), 'filetype': 'MH_EXECUTE',
+              'entry': hex(entry), 'base': hex(base), 'end': hex(limit),
+              'segments': len(segments), 'darwinboot_parsekernelheader_compatible': True,
+              'runtime_qualified': False, 'hardware_tested': False,
+          }
+          out = Path('out/peridot/kernel/native-kernel-bootcheck.json')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(report, indent=2) + '\\n')
+          print(json.dumps(report, indent=2))
+          PY
+
+          # Verify the Peridot platform drivers were linked into the native image.
+          xcrun nm -g "$RAW_KERNEL" > out/peridot/kernel/native-symbols.txt
+          grep -Eq ' _armdt_platform_configured$' out/peridot/kernel/native-symbols.txt
+          grep -Eq ' _armcpu_registered$' out/peridot/kernel/native-symbols.txt
+
+          # Use the native kernel for the payload. Do not ship the experimental
+          # kernelcache-rebinding candidate whose own report says loadable=false.
+          mkdir -p out/peridot/kernel
+          cp "$RAW_KERNEL" out/peridot/kernel/kernel.macho
+          rm -f out/peridot/kernel/kernel.json
           ./unixnu build payload -D ../UniXNU-braveark --unique-chip-id 0x123456789ABCDEF0
 
+          # Verify the FAT ESP carries the exact raw kernel, its ADT and a clean
+          # storage-free config. No UFS node or /filesystems subtree is accepted.
+          PAYLOAD=out/peridot/payload/payload.img
+          mdir -i "$PAYLOAD" ::/EFI/UniXNU/Payloads
+          mcopy -i "$PAYLOAD" ::/EFI/UniXNU/Payloads/kernel.macho "$RUNNER_TEMP/payload-kernel.macho"
+          mcopy -i "$PAYLOAD" ::/EFI/UniXNU/Payloads/kernel.macho.adt "$RUNNER_TEMP/peridot.adt"
+          cmp "$RAW_KERNEL" "$RUNNER_TEMP/payload-kernel.macho"
+          dtc -I dtb -O dts -o "$RUNNER_TEMP/peridot.dts" "$RUNNER_TEMP/peridot.adt"
+          grep -q 'arm,gic-v3' "$RUNNER_TEMP/peridot.dts"
+          grep -q 'nvram-proxy-data' "$RUNNER_TEMP/peridot.dts"
+          ! grep -Eq 'ufshc|/filesystems|native-ufs-root' "$RUNNER_TEMP/peridot.dts"
       - name: Diagnose build failure
         if: failure()
         run: |
@@ -250,18 +403,20 @@ jobs:
         working-directory: UniXNU
         run: |
           set -eu
-          stage="$RUNNER_TEMP/peridot-stage1-plain"
+          stage="$RUNNER_TEMP/peridot-native-entry-plain"
           rm -rf "$stage"
           mkdir -p "$stage"
           test -s out/peridot/kernel/kernel.macho
+          test -s out/peridot/kernel/native-kernel-bootcheck.json
+          test -s build/xnu/kernel-audit.json
           test -s out/peridot/payload/payload.img
           cp out/peridot/kernel/kernel.macho "$stage/"
+          cp out/peridot/kernel/native-kernel-bootcheck.json "$stage/"
+          cp out/peridot/kernel/native-symbols.txt "$stage/"
+          cp build/xnu/kernel-audit.json "$stage/"
           cp out/peridot/payload/payload.img "$stage/"
           cp out/peridot/payload/payload.json "$stage/"
-          cp out/peridot/kernel/kernel.json "$stage/" 2>/dev/null || true
-          echo "Staged private build outputs outside the artifact directory:"
           ls -lh "$stage"
-
       - name: Encrypt test bundle for this build session
         if: success()
         working-directory: UniXNU
@@ -270,8 +425,8 @@ jobs:
           PUB="../UniXNU-braveark/.github/keys/peridot-stage1-public.pem"
           test -s "$PUB"
           stage="$RUNNER_TEMP/peridot-stage1-plain"
-          keyfile="$RUNNER_TEMP/peridot-stage1-key.hex"
-          tarfile="$RUNNER_TEMP/peridot-stage1.tar"
+          keyfile="$RUNNER_TEMP/peridot-native-entry-key.hex"
+          tarfile="$RUNNER_TEMP/peridot-native-entry.tar"
           test -d "$stage"
           mkdir -p artifacts
           rm -f artifacts/*
@@ -282,20 +437,20 @@ jobs:
           chmod 600 "$keyfile"
           tar -C "$stage" -cf "$tarfile" .
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 250000 -md sha256 \
-            -pass file:"$keyfile" -in "$tarfile" -out artifacts/peridot-stage1.tar.enc
+            -pass file:"$keyfile" -in "$tarfile" -out artifacts/peridot-native-entry.tar.enc
           openssl dgst -sha256 -hmac "$keyhex" -binary \
-            artifacts/peridot-stage1.tar.enc > artifacts/peridot-stage1.hmac
+            artifacts/peridot-stage1.tar.enc > artifacts/peridot-native-entry.hmac
           openssl pkeyutl -encrypt -pubin -inkey "$PUB" -in "$keyfile" \
-            -out artifacts/peridot-stage1.key.enc \
+            -out artifacts/peridot-native-entry.key.enc \
             -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
           rm -rf "$stage" "$tarfile" "$keyfile"
           test "$(find artifacts -type f | wc -l | tr -d ' ')" = 3
           ls -lh artifacts/
-          echo "Only encrypted outputs are eligible for artifact upload."
+          echo "Only encrypted native-entry outputs are eligible for artifact upload."
 
       - name: Upload minimal test bundle
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: peridot-stage1-xnu-payload
+          name: peridot-native-entry-stage1
           path: UniXNU/artifacts/
