@@ -117,7 +117,7 @@ jobs:
 
           # First-stage safety: do not publish a UFS node at all. No storage
           # driver is built, and no native disk probe is needed to prove XNU entry.
-          p = Path('../UniXNU-braveark/scripts/make-peridot-adt.py')
+          p = Path('UniXNU-braveark/scripts/make-peridot-adt.py')
           adt = p.read_text()
           start = adt.find('              # UFS (0x1d84000)')
           end = adt.find('])]),', start)
