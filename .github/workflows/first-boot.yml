@@ -8,7 +8,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-native-entry-stage1
+  group: peridot-native-entry-stage1-v2
   cancel-in-progress: false
 
 jobs:
