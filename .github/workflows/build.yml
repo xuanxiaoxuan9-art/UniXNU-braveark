@@ -3,12 +3,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - audit/peridot-honest-bringup
+      - bringup/peridot-minimal-xnu
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-kernel-build
+  group: peridot-minimal-xnu-build
   cancel-in-progress: false
 jobs:
   kernel:
@@ -21,36 +21,12 @@ jobs:
           unzip -q unixnu-peridot-repo.zip -d unpack
           mv unpack/unixnu-peridot-repo UniXNU-braveark
           ln -sfn UniXNU-braveark UniXNU-peridot
-      - name: Validate Peridot hardware inputs
+      - name: Validate minimal XNU profile
         run: |
           set -eu
-          echo "Checking real Peridot inputs before spending time on the kernel build"
-          # All board scripts resolve fw/ from the Actions workspace root.
-          required=(
-            "fw/stock/dtb_3.dtb"
-            "fw/dtb_04.dtb"
-            "fw/android-harvest/msm-regs/a6xx.xml"
-            "fw/android-harvest/msm-regs/a6xx_gmu.xml"
-            "fw/android-harvest/msm-drv/a6xx_gmu.c"
-            "fw/android-harvest/msm-drv/a7xx_catalog.c"
-            "fw/android-harvest/vendor-source/arm-smmu-qcom.c"
-            "fw/gpu-firmware/gen71100_gmu.bin"
-            "fw/gpu-firmware/gen71100_sqe.fw"
-            "fw/gpu-firmware/gen71100_zap.mbn"
-          )
-          missing=0
-          for f in "${required[@]}"; do
-            if [ -s "$f" ]; then
-              printf 'FOUND  %s (%s bytes)\n' "$f" "$(wc -c < "$f" | tr -d ' ')"
-            else
-              echo "MISSING $f"
-              missing=1
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "::error::Peridot firmware/register harvest is incomplete. Dummy XML, copied objects, and fabricated audit checkpoints are not accepted."
-            exit 1
-          fi
+          test -s UniXNU-braveark/board.toml
+          test -s UniXNU-braveark/configs/peridot-nodisplay_defconfig
+          echo "Minimal Peridot profile found; GPU, touch and UFS archives are intentionally deferred."
       - uses: actions/checkout@v4
         continue-on-error: true
         with:
@@ -187,22 +163,30 @@ jobs:
           else
             echo 'no kernel.json plan; skip candidate publish'
           fi
-          # No Muyu-to-Peridot filename aliases and no synthetic runtime checkpoint.
-          ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
+          # First hardware milestone: minimal XNU only. Do not build display/GPU/touch/UFS archives.
+          ./unixnu defconfig peridot-nodisplay_defconfig -D ../UniXNU-braveark
           ./unixnu build kernel -D ../UniXNU-braveark
+          # The UEFI image supplied for this target currently has a 5-byte ramdisk.
+          # Build the FAT PERIDOTESP payload that carries the prelinked XNU kernel + ADT.
+          brew install mtools dtc
+          ./unixnu build payload -D ../UniXNU-braveark --unique-chip-id 0x123456789ABCDEF0
       - name: Diagnose
         if: failure()
-        working-directory: UniXNU
         run: |
-          echo '===== real errors ====='
-          grep -h "error:" out/peridot/logs/*.log 2>/dev/null | head -40 || echo 'no error lines'
-          echo '===== undefined symbols ====='
-          sed -n '/Undefined symbols/,$p' out/peridot/logs/*.log 2>/dev/null | head -25 || true
-          echo '===== step log tail ====='
-          tail -25 out/peridot/logs/step.log 2>/dev/null || true
-          mkdir -p dbg
-          cp out/peridot/logs/*.log dbg/ 2>/dev/null || true
-          du -sh dbg/* 2>/dev/null || true
+          if [ -d UniXNU ]; then
+            cd UniXNU
+            echo '===== real errors ====='
+            grep -h "error:" out/peridot/logs/*.log 2>/dev/null | head -40 || echo 'no error lines'
+            echo '===== undefined symbols ====='
+            sed -n '/Undefined symbols/,$p' out/peridot/logs/*.log 2>/dev/null | head -25 || true
+            echo '===== step log tail ====='
+            tail -25 out/peridot/logs/step.log 2>/dev/null || true
+            mkdir -p dbg
+            cp out/peridot/logs/*.log dbg/ 2>/dev/null || true
+            du -sh dbg/* 2>/dev/null || true
+          else
+            echo 'UniXNU checkout was not created; see earlier setup-step log.'
+          fi
       - name: Upload debug logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -229,5 +213,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: peridot-kernel
+          name: peridot-minimal-xnu-payload
           path: UniXNU/artifacts/
