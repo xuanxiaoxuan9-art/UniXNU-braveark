@@ -8,7 +8,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-native-entry-stage1-v2
+  group: peridot-native-entry-stage1-v3
   cancel-in-progress: false
 
 jobs:
@@ -244,6 +244,10 @@ jobs:
           ]
 
           payload_at = lines.index('[payload]')
+          # The uploaded live device-tree capture reports ddr_size=12 (12 GiB).
+          # The archived board.toml value 0x80000000 was only 2 GiB and is stale.
+          dram_line = next(i for i in range(payload_at + 1, len(lines)) if lines[i].strip().startswith('dram_size ='))
+          lines[dram_line] = 'dram_size = "0x300000000"'
           args_at = next(i for i in range(payload_at + 1, len(lines)) if lines[i].strip() == 'kernel_args = [')
           args_end = next(i for i in range(args_at + 1, len(lines)) if lines[i].strip() == ']')
           lines[args_at:args_end + 1] = [
@@ -281,6 +285,8 @@ jobs:
               'build-arm-driver.py ArmDTPlatform',
               'build-arm-driver.py ArmCpu',
           ]
+          assert parsed['payload']['dram_size'] == 0x300000000
+          assert parsed['payload']['adt']['owned_memory_size'] < parsed['payload']['dram_size']
           assert parsed['payload']['panic_screen'] is True
           assert parsed['payload']['entry_probe_fb_after'] == '_PE_create_console'
           assert 'native-ufs-root=1' not in parsed['payload']['kernel_args']
@@ -434,6 +440,7 @@ jobs:
           cp out/peridot/kernel/kernel-audit.json "$stage/"
           cp out/peridot/payload/payload.img "$stage/"
           cp out/peridot/payload/payload.json "$stage/"
+          cp out/peridot/logs/payload-patch.log "$stage/" 2>/dev/null || true
           ls -lh "$stage"
       - name: Encrypt test bundle for this build session
         if: success()
