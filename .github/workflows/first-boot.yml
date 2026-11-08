@@ -235,24 +235,48 @@ jobs:
         working-directory: UniXNU
         run: |
           set -eu
-          mkdir -p artifacts
+          stage="$RUNNER_TEMP/peridot-stage1-plain"
+          rm -rf "$stage"
+          mkdir -p "$stage"
           test -s out/peridot/kernel/kernel.macho
           test -s out/peridot/payload/payload.img
-          cp out/peridot/kernel/kernel.macho artifacts/
-          cp out/peridot/payload/payload.img artifacts/
-          cp out/peridot/payload/payload.json artifacts/
-          cp out/peridot/kernel/kernel.json artifacts/ 2>/dev/null || true
-          ls -lh artifacts/
+          cp out/peridot/kernel/kernel.macho "$stage/"
+          cp out/peridot/payload/payload.img "$stage/"
+          cp out/peridot/payload/payload.json "$stage/"
+          cp out/peridot/kernel/kernel.json "$stage/" 2>/dev/null || true
+          echo "Staged private build outputs outside the artifact directory:"
+          ls -lh "$stage"
 
-      - name: Encrypt test bundle
+      - name: Encrypt test bundle for this build session
         if: success()
         working-directory: UniXNU
-        env:
-          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
         run: |
-          test -n "$ARTIFACT_KEY" || { echo 'ARTIFACT_KEY secret is required'; exit 1; }
-          tar -C artifacts -cf peridot-stage1.tar .
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in peridot-stage1.tar -out artifacts/peridot-stage1.tar.enc
+          set -eu
+          PUB="../UniXNU-braveark/.github/keys/peridot-stage1-public.pem"
+          test -s "$PUB"
+          stage="$RUNNER_TEMP/peridot-stage1-plain"
+          keyfile="$RUNNER_TEMP/peridot-stage1-key.hex"
+          tarfile="$RUNNER_TEMP/peridot-stage1.tar"
+          test -d "$stage"
+          mkdir -p artifacts
+          rm -f artifacts/*
+          # A one-run random key is wrapped to a public key whose private half is
+          # kept outside the public repository. No plaintext kernel/ramdisk is uploaded.
+          keyhex="$(openssl rand -hex 32)"
+          printf '%s' "$keyhex" > "$keyfile"
+          chmod 600 "$keyfile"
+          tar -C "$stage" -cf "$tarfile" .
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 250000 -md sha256 \
+            -pass file:"$keyfile" -in "$tarfile" -out artifacts/peridot-stage1.tar.enc
+          openssl dgst -sha256 -hmac "$keyhex" -binary \
+            artifacts/peridot-stage1.tar.enc > artifacts/peridot-stage1.hmac
+          openssl pkeyutl -encrypt -pubin -inkey "$PUB" -in "$keyfile" \
+            -out artifacts/peridot-stage1.key.enc \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          rm -rf "$stage" "$tarfile" "$keyfile"
+          test "$(find artifacts -type f | wc -l | tr -d ' ')" = 3
+          ls -lh artifacts/
+          echo "Only encrypted outputs are eligible for artifact upload."
 
       - name: Upload minimal test bundle
         if: success()
