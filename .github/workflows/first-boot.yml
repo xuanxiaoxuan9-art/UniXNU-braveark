@@ -91,6 +91,21 @@ jobs:
               print('patched authenticated source fetch')
           else:
               print('source fetch already authenticated')
+
+          # board.toml explicitly marks filesystems=false for this early boot stage.
+          # The current payload builder forgot to forward that switch to the ADT tool.
+          p = Path('UniXNU/scripts/unixnu/payload.py')
+          body = p.read_text()
+          marker = "    if seed:\\n        command += ['--unique-chip-id', seed]\\n"
+          addition = marker + "    if adt.get('filesystems') is False:\\n        command.append('--no-filesystems')\\n"
+          if "command.append('--no-filesystems')" not in body:
+              if marker not in body:
+                  raise SystemExit('payload.py ADT argument insertion point not found')
+              body = body.replace(marker, addition, 1)
+              p.write_text(body)
+              print('forwarded filesystems=false to minimal ADT generator')
+          else:
+              print('filesystems=false forwarding already present')
           PY
 
       - name: Build minimal XNU and RAM payload
