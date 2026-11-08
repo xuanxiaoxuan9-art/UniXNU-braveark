@@ -20,6 +20,7 @@ jobs:
         run: |
           unzip -q unixnu-peridot-repo.zip -d unpack
           mv unpack/unixnu-peridot-repo UniXNU-braveark
+          ln -sfn UniXNU-braveark UniXNU-peridot
       - name: Validate Peridot hardware inputs
         run: |
           set -eu
@@ -50,22 +51,6 @@ jobs:
             echo "::error::Peridot firmware/register harvest is incomplete. Dummy XML, copied objects, and fabricated audit checkpoints are not accepted."
             exit 1
           fi
-      - name: Trim archives without sources
-        run: |
-          # 本板 package/ 里没有 PeridotUsbDebug.c / PeridotThermalProbe.c（只有 Muyu 同名版本），
-          # 这两个归档跑不到就整链失败；bring-up 阶段先去掉，等出画面再补。
-          python3 - <<'PYEOF'
-          import tomllib
-          from pathlib import Path
-          p = Path('UniXNU-braveark/board.toml')
-          if not p.is_file():
-              raise SystemExit('board.toml not found at ' + str(p.resolve()))
-          s = p.read_text()
-          drop = ('build-peridot-usb-debug.py', 'build-peridot-thermal.py')
-          new = ''.join(l for l in s.splitlines(True) if not any(d in l for d in drop))
-          p.write_text(new)
-          print('archives kept:', len(tomllib.loads(new)['kernel']['archives']))
-          PYEOF
       - uses: actions/checkout@v4
         continue-on-error: true
         with:
@@ -157,7 +142,8 @@ jobs:
               p.write_text(s)
               print('patched prepare-xnu-source.py')
           PYEOF
-          # NativeAES bindings must use the object actually produced by the NativeAES driver; no object substitution.\n      - name: Build kernel
+          # NativeAES bindings must use the object actually produced by the NativeAES driver; no object substitution.
+      - name: Build kernel
         working-directory: UniXNU
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,7 +187,8 @@ jobs:
           else
             echo 'no kernel.json plan; skip candidate publish'
           fi
-          # No Muyu-to-Peridot filename aliases and no synthetic runtime checkpoint.\n          ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
+          # No Muyu-to-Peridot filename aliases and no synthetic runtime checkpoint.
+          ./unixnu defconfig peridot_defconfig -D ../UniXNU-braveark
           ./unixnu build kernel -D ../UniXNU-braveark
       - name: Diagnose
         if: failure()
