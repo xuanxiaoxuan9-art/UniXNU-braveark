@@ -197,9 +197,15 @@ jobs:
         if: success()
         working-directory: UniXNU
         run: |
+          set -eu
           mkdir -p artifacts
-          find out/peridot \( -name 'kernel.macho' -o -name '*.noctf' \) -type f -exec cp -v {} artifacts/ \;
-          ls -l artifacts
+          test -s out/peridot/kernel/kernel.macho
+          test -s out/peridot/payload/payload.img
+          cp -v out/peridot/kernel/kernel.macho artifacts/
+          cp -v out/peridot/payload/payload.img artifacts/
+          cp -v out/peridot/payload/payload.json artifacts/
+          cp -v out/peridot/kernel/kernel.json artifacts/ 2>/dev/null || true
+          ls -lh artifacts
       - name: Encrypt
         if: success()
         working-directory: UniXNU
