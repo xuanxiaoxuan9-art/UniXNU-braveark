@@ -55,13 +55,21 @@ jobs:
 
       - name: Install build tools
         run: |
-          brew install cmake ninja unifdef llvm mtools dtc
+          brew install cmake ninja unifdef llvm lld mtools dtc
           LLVM_BIN="$(brew --prefix llvm)/bin"
+          LLD_BIN="$(brew --prefix lld)/bin"
           echo "$LLVM_BIN" >> "$GITHUB_PATH"
-          export PATH="$LLVM_BIN:$PATH"
+          echo "$LLD_BIN" >> "$GITHUB_PATH"
+          export PATH="$LLD_BIN:$LLVM_BIN:$PATH"
+          # The entry-probe assembler expects ld.lld beside the LLVM tools.
+          if [ ! -x "$LLVM_BIN/ld.lld" ]; then
+            ln -s "$LLD_BIN/ld.lld" "$LLVM_BIN/ld.lld"
+          fi
           command -v clang
           command -v llvm-objcopy
           command -v llvm-nm
+          test -x "$LLVM_BIN/ld.lld"
+          "$LLVM_BIN/ld.lld" --version
 
       - name: Authenticate Apple source fetches
         env:
