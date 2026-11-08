@@ -3,12 +3,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - bringup/peridot-boot-logo-stage1
+      - bringup/peridot-native-entry
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: peridot-first-boot-stage1
+  group: peridot-native-entry-stage1
   cancel-in-progress: false
 
 jobs:
