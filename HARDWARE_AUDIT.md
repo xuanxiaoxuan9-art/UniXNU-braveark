@@ -14,6 +14,13 @@ The hardware capture supplied for this project identifies the device as Redmi Tu
 - GPU: Adreno 735; observed GPU/GMU/SMMU bases are 0x3d00000 / 0x3d68000 / 0x3da0000.
 - The supplied partition dump contains `vendor_boot_a` and `dtbo_a`; the active runtime DT selector was identified as MSM ID 0x266 / board ID 0x08.
 
+The supplied `vendor_boot_a` v4 image was parsed read-only. Its DTB payload contains two concatenated FDTs:
+
+- DTB index 0: SHA-256 `94f473e5bdc0255efcaeedefe423017e26d5d18fdbbc0b76504b47f0e0db36a0`; GPU node says Adreno 735, chip ID `0x43030b00`, gen7-11-0, 11 OPP levels, initial level 10.
+- DTB index 1: SHA-256 `866dfb9105ebb4d2bd5ff8c1053ea45b9843a3f1f7fc20e02dbd81393f1e7401`; GPU node says Adreno 732, 9 OPP levels, initial level 8.
+
+The runtime selector (MSM ID `0x266` / board ID `0x08`) matches DTB index 0. Re-running the repository's GPU-input derivation against DTB index 0 reproduced every committed GPU/OPP/profile field; only the source label and DTB SHA differ. This is a much stronger match than DTB index 1 and gives us a recoverable, device-matched source for both expected input filenames. The DTB contains no MAC-address, 15-digit IMEI, or 32-hex device identifier strings in the inspected payload.
+
 The captured boot log requests `focaltech_ts_fw_TianMa.bin`; the recorded direct firmware lookup attempts include permission/not-found errors. Therefore the capture establishes the controller identity, not that a new XNU FocalTech driver or firmware path works.
 
 ## Source-package inconsistencies
